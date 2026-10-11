@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  functional:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Functional tests (non-setuid)
+        run: ./tests/test_ctxredact.sh
+      - name: Edge-case tests (non-setuid)
+        run: ./tests/test_edge_cases.sh
+      - name: Bitwarden source (hermetic, stub bws)
+        run: ./tests/test_bitwarden.sh
+      - name: Fuzz secret values through script usage patterns
+        run: ./tests/test_value_fuzz.sh
+
+  privilege-drop:
+    # Prove the setuid path: build+install as root (in a scratch prefix), then
+    # run the privilege tests as a NON-root user against the setuid binary.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install setuid build as root
+        run: sudo ./install.sh --prefix /tmp/cwtest
+      - name: Seed test-fixture vault (install.sh seeds change-me placeholders)
+        run: |
+          sudo tee /tmp/cwtest/etc/ctxredact/vault.env >/dev/null <<'EOF'
+          TEST_ALPHA=alpha12345
+          TEST_BETA=beta67890
+          TEST_GAMMA=gamma_abc
+          # a comment line
+          TEST_EQ=a=b=c
+          TEST_EMPTY=
+          EOF
+          sudo chown root:root /tmp/cwtest/etc/ctxredact/vault.env
+          sudo chmod 600 /tmp/cwtest/etc/ctxredact/vault.env
+      - name: Run privilege tests as non-root
+        # NOTE: do NOT chmod here: chmod 755 would strip the setuid bit and
+        # the privilege-drop tests would silently skip. install.sh already
+        # installs 4755 root:root, which is exactly what the tests need.
+        # sudo -u runner env (not su runner): su demands runner's password,
+        # which nobody has on a GH runner.
+        run: |
+          sudo -u runner env \
+            CTXREDACT_PWD_BIN=/tmp/cwtest/bin/ctxredact \
+            CTXREDACT_TEST_VAULT=/tmp/cwtest/etc/ctxredact/vault.env \
+            bash ./tests/test_ctxredact.sh
+      - name: Verify setuid mode refuses a non-root-owned bws (substitution guard)
+        # The broker runs bws as the dedicated 'ctxredact' uid in setuid mode and
+        # REQUIRES bws to be root-owned + non-agent-writable. This mirrors the
+        # real threat: a caller swapping bws for a fake that reads BWS_ACCESS_TOKEN.
+        run: |
+          # build a fake bws owned by the RUNNER (not root), must be refused
+          sudo -u runner bash -c \
+            'echo "#!/bin/bash; echo LEAK:\$BWS_ACCESS_TOKEN >&2" > /tmp/fakebws && chmod 0755 /tmp/fakebws'
+          # seed a token so the bitwarden path reaches validate_bws
+          sudo tee /tmp/cwtest/etc/ctxredact/vault.env >/dev/null <<'EOF'
+          BITWARDEN_TOKEN=0.fake.uuid.secret
+          BITWARDEN_PROJECT_ID=11111111-2222-3333-4444-555555555555
+          EOF
+          sudo chown root:root /tmp/cwtest/etc/ctxredact/vault.env
+          sudo chmod 600 /tmp/cwtest/etc/ctxredact/vault.env
+          set +e
+          OUT=$(sudo -u runner env \
+            CTXREDACT_BWS=/tmp/fakebws \
+            /tmp/cwtest/bin/ctxredact --bitwarden --redact X -- true 2>&1)
+          RC=$?
+          set -e
+          echo "rc=$RC"; echo "$OUT"
+          echo "$OUT" | grep -q "refusing" && { echo "PASS: non-root-owned bws refused"; true; } \
+            || { echo "FAIL: bws substitution not blocked"; exit 1; }
+
+  plugin-handlers:
+    # Handler-level tests: mandatory redaction, labeled markers, stderr
+    # allowlist, binary validation. Builds a scratch dev binary with a fake vault.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Handler tests
+        run: python3 tests/test_plugin_handlers.py

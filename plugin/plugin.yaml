@@ -1,0 +1,15 @@
+name: ctxredact
+version: 2.3.1
+manifest_version: 2
+api_version: 1
+description: >-
+  Run shell commands with secrets injected by the ctxredact setuid broker, so
+  the agent can use credentials (SSH, API, DB) without the values ever entering
+  its context. Values are injected by name and always scrubbed from output
+  (marked [REDACTED:KEY]); redaction cannot be disabled by the caller.
+license: MIT
+tags: [secrets, security, vault, credentials]
+provides_tools:
+  - run_with_secrets
+  - check_secret
+  - list_secrets

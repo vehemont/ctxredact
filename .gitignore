@@ -1,0 +1,19 @@
+# the live vault ; never commit real secrets
+vault.env
+*.env
+/bin/
+/build/
+
+# build artifacts
+ctxredact-dev
+ctxredact
+*.o
+
+# scratch from tests
+/tmp/ctxredact*
+
+# editor/OS noise
+.DS_Store
+*.swp
+*~
+tests/.model_eval_last.json
